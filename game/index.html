@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Star Catcher</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0b1026; height: 100%; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
+  #wrap { position: relative; width: 800px; height: 500px; }
+  canvas { display: block; width: 800px; height: 500px; background: linear-gradient(#0b1026, #1b2a5e); border-radius: 12px; }
+  #hud { position: absolute; top: 0; left: 0; right: 0; display: flex; justify-content: space-between;
+         padding: 12px 18px; color: #fff; font-size: 20px; font-weight: 700; pointer-events: none;
+         text-shadow: 0 2px 6px rgba(0,0,0,.6); }
+  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+             justify-content: center; color: #fff; text-align: center; background: rgba(5,8,28,.72);
+             border-radius: 12px; }
+  #overlay h1 { margin: 0 0 10px; font-size: 52px; letter-spacing: 2px; color: #ffd94d; }
+  #overlay p { margin: 6px 0; font-size: 19px; line-height: 1.5; max-width: 560px; }
+  #overlay .big { font-size: 26px; font-weight: 800; }
+  #overlay button { margin-top: 16px; padding: 12px 28px; font-size: 20px; font-weight: 800;
+                    border: 0; border-radius: 999px; background: #ffd94d; color: #1a1440; cursor: pointer; }
+  #overlay button:hover { background: #ffe680; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="800" height="500"></canvas>
+  <div id="hud"><span id="score">Score 0</span><span id="lives">Lives ♥♥♥</span><span id="time">60s</span></div>
+  <div id="overlay">
+    <h1>⭐ STAR CATCHER</h1>
+    <p>Move the paddle with <b>← →</b> or your <b>mouse</b>.</p>
+    <p>Catch falling <b>stars ⭐ (+10)</b>. Dodge the <b>bombs 💣 (−1 life)</b>.</p>
+    <p>3 lives, 60 seconds — reach <b>100 points to win</b>.</p>
+    <button id="startBtn">▶ Start game</button>
+  </div>
+</div>
+<script>
+(function () {
+  var canvas = document.getElementById('game');
+  var ctx = canvas.getContext('2d');
+  var W = 800, H = 500;
+  var scoreEl = document.getElementById('score');
+  var livesEl = document.getElementById('lives');
+  var timeEl = document.getElementById('time');
+  var overlay = document.getElementById('overlay');
+  var startBtn = document.getElementById('startBtn');
+
+  var state = 'title'; // title | playing | over
+  var paddle = { x: 360, y: 462, w: 90, h: 14, speed: 9 };
+  var items = [];
+  var score = 0, lives = 3, timeLeft = 60;
+  var keys = {};
+  var lastSpawn = 0, lastTick = 0, elapsed = 0;
+  var resultText = '';
+
+  function reset() {
+    score = 0; lives = 3; timeLeft = 60; elapsed = 0;
+    items = []; paddle.x = 360;
+    updateHud();
+  }
+  function updateHud() {
+    scoreEl.textContent = 'Score ' + score;
+    livesEl.textContent = 'Lives ' + '♥'.repeat(Math.max(lives, 0)) + '♡'.repeat(Math.max(3 - lives, 0));
+    timeEl.textContent = Math.ceil(timeLeft) + 's';
+  }
+  function spawnItem(now) {
+    var bomb = Math.random() < 0.24;
+    items.push({
+      x: 20 + Math.random() * (W - 40),
+      y: -24,
+      vy: 2.2 + Math.random() * 2.2 + elapsed * 0.02,
+      r: bomb ? 13 : 11,
+      bomb: bomb,
+      spin: Math.random() * Math.PI * 2
+    });
+    lastSpawn = now;
+  }
+  function drawStar(x, y, r, rot) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot);
+    ctx.fillStyle = '#ffd94d';
+    ctx.beginPath();
+    for (var i = 0; i < 10; i++) {
+      var ang = -Math.PI / 2 + i * Math.PI / 5;
+      var rad = (i % 2 === 0) ? r : r * 0.45;
+      var px = Math.cos(ang) * rad, py = Math.sin(ang) * rad;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+  function drawBomb(x, y, r) {
+    ctx.fillStyle = '#22242e';
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#8a8f9e'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = '#c9a227'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x + r * 0.5, y - r * 0.7); ctx.lineTo(x + r * 0.9, y - r * 1.2); ctx.stroke();
+    ctx.fillStyle = '#ff5a3c';
+    ctx.beginPath(); ctx.arc(x + r * 0.9, y - r * 1.25, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('💣', x, y + 1);
+  }
+  function drawBackground() {
+    ctx.fillStyle = '#0b1026';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(255,255,255,.5)';
+    for (var i = 0; i < 40; i++) {
+      var sx = (i * 173) % W, sy = (i * 97) % H;
+      ctx.fillRect(sx, sy, 2, 2);
+    }
+  }
+  function drawPaddle() {
+    ctx.fillStyle = '#ffd94d';
+    ctx.beginPath();
+    ctx.roundRect(paddle.x, paddle.y, paddle.w, paddle.h, 7);
+    ctx.fill();
+    ctx.fillStyle = '#1a1440';
+    ctx.fillRect(paddle.x + 8, paddle.y + 5, paddle.w - 16, 4);
+  }
+  function showOverlay(html) {
+    overlay.innerHTML = html;
+    overlay.classList.remove('hidden');
+    var btn = document.getElementById('startBtn');
+    if (btn) btn.addEventListener('click', startGame);
+  }
+  function startGame() {
+    reset();
+    state = 'playing';
+    overlay.classList.add('hidden');
+    lastTick = performance.now();
+  }
+  function endGame(won, reason) {
+    state = 'over';
+    resultText = won ? 'YOU WIN!' : 'GAME OVER';
+    showOverlay(
+      '<h1>' + resultText + '</h1>' +
+      '<p class="big">' + reason + '</p>' +
+      '<p>Final score: <b>' + score + '</b> &nbsp;·&nbsp; Stars caught: <b>' + Math.floor(score / 10) + '</b></p>' +
+      '<button id="startBtn">↻ Play again</button>'
+    );
+  }
+  function step(now) {
+    if (state !== 'playing') { requestAnimationFrame(step); return; }
+    var dt = Math.min((now - lastTick) / 1000, 0.05);
+    lastTick = now;
+    elapsed += dt;
+    timeLeft = Math.max(0, 60 - elapsed);
+    if (timeLeft <= 0) {
+      updateHud();
+      endGame(score >= 100, score >= 100 ? 'You reached 100 points!' : 'Time is up — you needed 100 points.');
+      requestAnimationFrame(step);
+      return;
+    }
+    if (keys['ArrowLeft'] || keys['a']) paddle.x -= paddle.speed;
+    if (keys['ArrowRight'] || keys['d']) paddle.x += paddle.speed;
+    paddle.x = Math.max(0, Math.min(W - paddle.w, paddle.x));
+    if (now - lastSpawn > 620) spawnItem(now);
+    for (var i = items.length - 1; i >= 0; i--) {
+      var it = items[i];
+      it.y += it.vy;
+      it.spin += 0.05;
+      var cx = Math.max(paddle.x, Math.min(it.x, paddle.x + paddle.w));
+      var cy = Math.max(paddle.y, Math.min(it.y, paddle.y + paddle.h));
+      var dx = it.x - cx, dy = it.y - cy;
+      if (dx * dx + dy * dy < it.r * it.r) {
+        if (it.bomb) {
+          lives -= 1;
+          updateHud();
+          if (lives <= 0) {
+            items.splice(i, 1);
+            endGame(false, 'A bomb took your last life.');
+            requestAnimationFrame(step);
+            return;
+          }
+        } else {
+          score += 10;
+          updateHud();
+          if (score >= 100) {
+            items.splice(i, 1);
+            endGame(true, 'You reached 100 points!');
+            requestAnimationFrame(step);
+            return;
+          }
+        }
+        items.splice(i, 1);
+        continue;
+      }
+      if (it.y - it.r > H) items.splice(i, 1);
+    }
+    drawBackground();
+    for (var j = 0; j < items.length; j++) {
+      var it2 = items[j];
+      if (it2.bomb) drawBomb(it2.x, it2.y, it2.r); else drawStar(it2.x, it2.y, it2.r, it2.spin);
+    }
+    drawPaddle();
+    updateHud();
+    requestAnimationFrame(step);
+  }
+
+  document.addEventListener('keydown', function (e) {
+    keys[e.key] = true;
+    if ((e.key === ' ' || e.key === 'Enter') && state !== 'playing') startGame();
+    if (e.key === 'r' && state === 'over') startGame();
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') e.preventDefault();
+  });
+  document.addEventListener('keyup', function (e) { keys[e.key] = false; });
+  canvas.addEventListener('mousemove', function (e) {
+    var rect = canvas.getBoundingClientRect();
+    var mx = (e.clientX - rect.left) * (W / rect.width);
+    paddle.x = Math.max(0, Math.min(W - paddle.w, mx - paddle.w / 2));
+  });
+  canvas.addEventListener('click', function () { if (state !== 'playing') startGame(); });
+  startBtn.addEventListener('click', startGame);
+  drawBackground();
+  drawPaddle();
+  updateHud();
+  requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>
